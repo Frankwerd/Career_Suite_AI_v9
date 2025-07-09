@@ -26,16 +26,44 @@ function runFullProjectInitialSetup(passedSpreadsheet) {
     Logger.log(`[${FUNC_NAME} INFO] Using PASSED spreadsheet: "${activeSS.getName()}", ID: ${activeSS.getId()}`);
   } else {
     // Fallback logic for manual runs from the editor
-    Logger.log(`[${FUNC_NAME} INFO] No spreadsheet passed (manual run). Fallback get/create...`);
-    const { spreadsheet: foundOrCreatedSS } = getOrCreateSpreadsheetAndSheet();
-    activeSS = foundOrCreatedSS;
+    Logger.log(`[${FUNC_NAME} INFO] No spreadsheet passed (e.g., manual run from editor). Attempting to get active spreadsheet.`);
+    activeSS = SpreadsheetApp.getActiveSpreadsheet(); 
+    // If still no activeSS (e.g. script run headless without context), then try getOrCreate
+    if (!activeSS) {
+        Logger.log(`[${FUNC_NAME} WARN] No specific spreadsheet passed and no active spreadsheet found. Fallback to getOrCreateSpreadsheetAndSheet(). This might target a generic or template sheet.`);
+        const { spreadsheet: foundOrCreatedSS } = getOrCreateSpreadsheetAndSheet(); // From SheetUtils.gs
+        activeSS = foundOrCreatedSS;
+    } else {
+        Logger.log(`[${FUNC_NAME} INFO] Using ACTIVE spreadsheet: "${activeSS.getName()}", ID: ${activeSS.getId()}`);
+    }
   }
 
   if (!activeSS) {
-    const errorMsg = `CRITICAL [${FUNC_NAME}]: No valid spreadsheet. Setup aborted.`;
+    const errorMsg = `CRITICAL [${FUNC_NAME}]: No valid spreadsheet could be determined. Setup aborted.`;
     Logger.log(errorMsg);
     return { success: false, message: errorMsg, detailedMessages: [errorMsg], sheetId: null, sheetUrl: null };
   }
+
+  // --- TEMPLATE CHECK ---
+  // TEMPLATE_SHEET_ID must be defined in Config.js
+  if (typeof TEMPLATE_SHEET_ID !== 'undefined' && TEMPLATE_SHEET_ID !== "" && activeSS.getId() === TEMPLATE_SHEET_ID) {
+    const templateMsg = `[${FUNC_NAME} INFO] Target spreadsheet is the TEMPLATE (ID: ${TEMPLATE_SHEET_ID}). Setup SKIPPED to prevent modifications to the template. This is normal if setup was triggered on the template directly.`;
+    Logger.log(templateMsg);
+    // Optionally, show a UI alert if run manually on the template
+    if (!passedSpreadsheet) { // Indicates a manual run from menu or editor
+        try {
+            SpreadsheetApp.getUi().alert('Template Sheet', 'Initial setup is not meant to be run on the template sheet itself. Please make a copy first, then run the setup on your new sheet if needed, or ensure the automated setup runs on your copy.', SpreadsheetApp.getUi().ButtonSet.OK);
+        } catch (e) { /* UI not available, e.g. headless run, ignore */ }
+    }
+    return { 
+        success: true, // Success because the check worked as expected
+        message: "Setup skipped: Target is template.", 
+        detailedMessages: [templateMsg], 
+        sheetId: activeSS.getId(), 
+        sheetUrl: activeSS.getUrl() 
+    };
+  }
+  // --- END TEMPLATE CHECK ---
 
   // --- 1. Setup Job Application Tracker Module ---
   Logger.log(`\n[${FUNC_NAME} INFO] --- Starting Job Application Tracker Module Setup ---`);
@@ -676,7 +704,7 @@ function markStaleApplicationsAsRejected() {
 function onOpen(e) {
   const ui = SpreadsheetApp.getUi();
   const menuName = CUSTOM_MENU_NAME || '⚙️ CareerSuite.AI Tools'; // CUSTOM_MENU_NAME from Config.gs
-  const menu = ui.createMenu(menuName); 
+  const menu = ui.createMenu(menuName);
 
   menu.addItem('▶️ RUN FULL PROJECT SETUP', 'runFullProjectInitialSetup');
   menu.addSeparator();
@@ -694,4 +722,58 @@ function onOpen(e) {
       .addItem('🔍 Show All User Properties', 'showAllUserProperties') // Assumed in AdminUtils.gs
       .addItem('🔩 TEMPORARY: Set Hardcoded API Key', 'TEMPORARY_manualSetSharedGeminiApiKey')); // Assumed in AdminUtils.gs
   menu.addToUi();
+
+  // --- Automatic Initial Setup for New Copies ---
+  // This section attempts to run the initial setup automatically when a user opens
+  // their unique copy of the sheet (with its own copied script project) for the first time.
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const setupCompleteFlag = 'initialSetupDone_vCSAI_1'; // Use a unique, versioned flag
+
+    if (!scriptProperties.getProperty(setupCompleteFlag)) {
+      Logger.log(`[onOpen INFO] Flag "${setupCompleteFlag}" not found. Checking conditions for initial setup.`);
+
+      // Ensure this isn't running in a limited authorization mode (e.g., when a trigger fires headless)
+      // For onOpen, e.authMode is usually FULL or LIMITED for the user opening it. NONE is rare for onOpen.
+      if (e && e.authMode && e.authMode !== ScriptApp.AuthMode.NONE) {
+        const activeSS = SpreadsheetApp.getActiveSpreadsheet();
+        const currentSheetId = activeSS.getId();
+
+        // Safety check: Ensure this isn't the original template sheet.
+        // This is a secondary check; the primary scenario is this code runs in a *copied* script project
+        // where TEMPLATE_SHEET_ID might not even be relevant if Config.js isn't perfectly copied or is altered.
+        // However, if TEMPLATE_SHEET_ID *is* defined (e.g. from Config.js) and matches, skip.
+        let isTemplate = false;
+        if (typeof TEMPLATE_SHEET_ID !== 'undefined' && TEMPLATE_SHEET_ID && TEMPLATE_SHEET_ID !== "" && currentSheetId === TEMPLATE_SHEET_ID) {
+          isTemplate = true;
+          Logger.log(`[onOpen INFO] Current sheet (ID: ${currentSheetId}) is the template. Automatic setup skipped.`);
+        }
+
+        if (!isTemplate) {
+          Logger.log(`[onOpen INFO] New copy (Sheet ID: ${currentSheetId}). Attempting automatic initial setup.`);
+          // Call the main setup function, passing the active spreadsheet.
+          const setupResult = runFullProjectInitialSetup(activeSS);
+
+          if (setupResult && setupResult.success) {
+            scriptProperties.setProperty(setupCompleteFlag, 'true');
+            Logger.log(`[onOpen INFO] Automatic initial setup successful. Flag "${setupCompleteFlag}" set.`);
+            // Optionally, notify the user of success if appropriate (though setup might have its own alerts)
+            // ui.alert('Setup Complete', 'The initial setup for your sheet has completed successfully!', ui.ButtonSet.OK);
+          } else {
+            Logger.log(`[onOpen WARN] Automatic initial setup may have failed or was skipped. Result: ${JSON.stringify(setupResult)}`);
+            // Optionally, alert the user that setup needs to be run manually
+            // ui.alert('Setup Incomplete', 'The automatic initial setup did not complete as expected. Please try running "RUN FULL PROJECT SETUP" from the "${menuName}" menu.', ui.ButtonSet.OK);
+          }
+        }
+      } else {
+        Logger.log(`[onOpen INFO] Setup skipped due to AuthMode: ${e ? e.authMode : 'N/A (no event object)'}. This is normal if opened in a restricted context.`);
+      }
+    } else {
+      Logger.log(`[onOpen INFO] Flag "${setupCompleteFlag}" is set. Automatic initial setup already performed or skipped previously.`);
+    }
+  } catch (err) {
+    Logger.log(`[onOpen ERROR] Error during automatic initial setup attempt: ${err.toString()}\nStack: ${err.stack}`);
+    // Avoid breaking the onOpen for menu creation if auto-setup fails.
+    // ui.alert('Error', 'An error occurred during the onOpen process. Some automated setup steps may not have run. Please check logs or try manual setup.', ui.ButtonSet.OK);
+  }
 }
