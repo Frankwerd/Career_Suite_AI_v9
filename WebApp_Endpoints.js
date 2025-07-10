@@ -13,26 +13,28 @@ function doGet(e) {
   try {
     const action = e.parameter.action;
     Logger.log(`[${FUNC_NAME}] Received GET request. Action: "${action}". User: ${Session.getEffectiveUser().getEmail()}`);
-    
-    // The presence of an `action` parameter implies a legitimate API call from our extension.
-    // The `forceAuth` parameter is for the initial auth landing page.
+
+    // Route to the correct function based on the 'action' parameter.
+    // If an 'action' is provided, we treat it as an API call from our extension.
     if (action) {
-      // --- Route to the correct function based on the 'action' parameter ---
       switch (action) {
         case 'getOrCreateSheet':
-          return doGet_getOrCreateSheet(e);
+          return doGet_getOrCreateSheet(e); // Handles sheet creation/retrieval.
+
         case 'getWeeklyApplicationData':
-          return doGet_WeeklyApplicationData(e);
+          return doGet_WeeklyApplicationData(e); // Handles chart data.
+
         case 'getApiKeyForScript':
-          return doGet_getApiKeyForScript(e);
+          return doGet_getApiKeyForScript(e); // Handles key sync for copied sheets.
+
         default:
+          // If the action is unknown, return a clear JSON error.
           return createJsonResponse({ success: false, error: `Unknown action: ${action}` });
       }
-    } else if (e.parameter.forceAuth) {
-        return createAuthLandingPage();
     } else {
-        // This case handles a direct visit to the URL without parameters.
-        return createAuthLandingPage(); // Show a friendly page instead of an error.
+      // If no action is specified, it's likely a user visiting the URL directly
+      // or the initial OAuth redirect. Show a user-friendly landing page.
+      return createAuthLandingPage();
     }
 
   } catch (error) {
@@ -41,118 +43,94 @@ function doGet(e) {
   }
 }
 
+/**
+ * NEW/CORRECTED: Handles POST requests, which should ONLY be for saving data like the API key.
+ * @param {object} e The event parameter from the POST request.
+ * @return {GoogleAppsScript.Content.TextOutput} A JSON response.
+ */
 function doPost(e) {
+  const FUNC_NAME = "WebApp_doPost";
   try {
-    // --- User & Action Identification ---
-    // Get the authenticated user's email. This is crucial for logging and multi-user contexts.
-    const userEmail = e && e.user ? e.user.email : Session.getActiveUser().getEmail();
-    Logger.log(`WebApp_Endpoints: doPost received a request from user: ${userEmail}.`);
+    const userEmail = Session.getEffectiveUser().getEmail();
+    Logger.log(`[${FUNC_NAME}] Received POST request from user: ${userEmail}.`);
 
-    // Determine the specific action requested by the extension via URL parameter.
-    // e.g., ?action=setApiKey
-    const action = e && e.parameter ? e.parameter.action : null;
+    const action = e.parameter.action;
 
-    // --- Action Routing ---
-    // Based on the 'action' parameter, we route to the appropriate logic block.
-
-    // === ACTION: setApiKey ===
-    // This action securely receives the user's Gemini API key from the extension
-    // and saves it to their private UserProperties store.
     if (action === 'setApiKey') {
-      Logger.log(`[WebApp] Routing to 'setApiKey' action for user ${userEmail}.`);
+      Logger.log(`[${FUNC_NAME}] Routing to 'setApiKey' action.`);
       
       const postData = JSON.parse(e.postData.contents);
       const apiKey = postData.apiKey;
 
-      // Validate the received key to ensure it's not empty or invalid.
       if (!apiKey || typeof apiKey !== 'string' || apiKey.length < 35) {
-        Logger.log(`[WebApp ERROR] 'setApiKey' failed: Invalid API key provided by user ${userEmail}.`);
-        return ContentService.createTextOutput(JSON.stringify({
-          status: 'error',
-          message: 'Invalid or missing API key provided in the request.'
-        })).setMimeType(ContentService.MimeType.JSON);
+        Logger.log(`[${FUNC_NAME} ERROR] 'setApiKey' failed: Invalid API key provided.`);
+        return createJsonResponse({ status: 'error', message: 'Invalid or missing API key provided.' });
       }
 
-      // GEMINI_API_KEY_PROPERTY is the constant from Config.gs
-      PropertiesService.getUserProperties().setProperty(GEMINI_API_KEY_PROPERTY, apiKey);
+      PropertiesService.getUserProperties().setProperty(GEMINI_API_KEY_PROPERTY, apiKey); // From Config.gs
 
-      Logger.log(`[WebApp SUCCESS] Successfully saved Gemini API key to UserProperties for user ${userEmail}.`);
-      return ContentService.createTextOutput(JSON.stringify({
-        status: 'success',
-        message: 'API key was successfully saved to the backend.'
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // === DEFAULT ACTION: getOrCreateSheet ===
-    // If no specific action is provided, the default behavior is to get or create
-    // the user's main Job Tracker spreadsheet. This is triggered by the "Manage Job Tracker" button.
-    if (!action) {
-      Logger.log(`[WebApp] Routing to default 'getOrCreateSheet' action for user ${userEmail}.`);
-
-      const existingSheetId = PropertiesService.getUserProperties().getProperty('userMjmSheetId');
-      if (existingSheetId) {
-        try {
-          const existingSheet = SpreadsheetApp.openById(existingSheetId);
-          if (existingSheet) {
-            Logger.log(`[WebApp SUCCESS] User ${userEmail} already has a sheet. ID=${existingSheetId}`);
-            return ContentService.createTextOutput(JSON.stringify({
-              status: 'success',
-              message: 'Your CareerSuite.AI Data sheet already exists.',
-              sheetId: existingSheetId,
-              sheetUrl: existingSheet.getUrl(),
-              sheetName: existingSheet.getName()
-            })).setMimeType(ContentService.MimeType.JSON);
-          }
-        } catch (openErr) {
-          Logger.log(`[WebApp WARN] Stored sheet ID ${existingSheetId} for ${userEmail} was inaccessible: ${openErr.message}. Clearing property and creating a new sheet.`);
-          PropertiesService.getUserProperties().deleteProperty('userMjmSheetId');
-        }
-      }
-
-      // Logic to create a new sheet from the template
-      const templateIdToUse = TEMPLATE_MJM_SHEET_ID; // From Config.gs
-      if (!templateIdToUse || templateIdToUse.length < 20) {
-        throw new Error("Server configuration error: Master Template Sheet ID is not set correctly in Config.gs.");
-      }
-
-      Logger.log(`[WebApp INFO] Creating new sheet from template ID ${templateIdToUse} for user ${userEmail}.`);
-      const originalFile = DriveApp.getFileById(templateIdToUse);
-      const newFileName = `CareerSuite.AI Data`;
-      
-      const newSpreadsheetFile = originalFile.makeCopy(newFileName);
-      const newSpreadsheetId = newSpreadsheetFile.getId();
-      
-      newSpreadsheetFile.setOwner(userEmail);
-
-      Logger.log(`[WebApp SUCCESS] New sheet created for ${userEmail}: "${newFileName}", ID=${newSpreadsheetId}. Ownership transferred.`);
-
-      PropertiesService.getUserProperties().setProperty('userMjmSheetId', newSpreadsheetId);
-      // runFullProjectInitialSetup(SpreadsheetApp.openById(newSpreadsheetId)); // DEFERRED TO ON_OPEN
-      
-      return ContentService.createTextOutput(JSON.stringify({
-        status: 'success',
-        message: 'Your CareerSuite.AI Data sheet has been created and set up successfully!',
-        sheetId: newSpreadsheetId,
-        sheetUrl: newSpreadsheetFile.getUrl(),
-        sheetName: newFileName
-      })).setMimeType(ContentService.MimeType.JSON);
+      Logger.log(`[${FUNC_NAME} SUCCESS] Saved Gemini API key to UserProperties for user ${userEmail}.`);
+      return createJsonResponse({ status: 'success', message: 'API key was successfully saved to the backend.' });
     }
 
-    // Fallback for an unknown action parameter.
-    Logger.log(`[WebApp WARN] An unknown POST action was requested: "${action}".`);
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'error',
-      message: 'Unknown or unsupported POST action requested.'
-    })).setMimeType(ContentService.MimeType.JSON);
+    Logger.log(`[${FUNC_NAME} WARN] An unknown POST action was requested: "${action}".`);
+    return createJsonResponse({ status: 'error', message: 'Unknown or unsupported POST action.' });
 
   } catch (error) {
-    // Global Error Handling for any unexpected errors.
-    Logger.log(`[WebApp CRITICAL ERROR] Error in doPost (Outer Catch): ${error.toString()}\nStack: ${error.stack}`);
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'error',
-      message: 'Failed to complete the requested action due to a server-side error: ' + error.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
+    Logger.log(`[${FUNC_NAME} CRITICAL ERROR] Error in doPost: ${error.toString()}\nStack: ${error.stack}`);
+    return createJsonResponse({ status: 'error', message: `Server error on POST: ${error.message}` });
   }
+}
+
+
+/**
+ * NEW: Handles the logic for getting an existing sheet or creating a new one.
+ * This is the primary endpoint for the extension's "Access My Job Tracker" button.
+ * @param {object} e The event parameter from the GET request.
+ * @return {GoogleAppsScript.Content.TextOutput} A JSON response.
+ */
+function doGet_getOrCreateSheet(e) {
+  const FUNC_NAME = "doGet_getOrCreateSheet";
+  const userEmail = Session.getEffectiveUser().getEmail();
+  const userProps = PropertiesService.getUserProperties();
+  const existingSheetId = userProps.getProperty('userMjmSheetId');
+  
+  if (existingSheetId) {
+    try {
+      const existingSheet = SpreadsheetApp.openById(existingSheetId);
+      Logger.log(`[${FUNC_NAME}] Found existing, valid sheet for ${userEmail}: ID=${existingSheetId}`);
+      return createJsonResponse({
+        status: "success",
+        message: "Sheet already exists.",
+        sheetId: existingSheetId,
+        sheetUrl: existingSheet.getUrl()
+      });
+    } catch (openErr) {
+      Logger.log(`[${FUNC_NAME}] Stored sheet ID ${existingSheetId} was invalid. Clearing property and creating new. Error: ${openErr.message}`);
+      userProps.deleteProperty('userMjmSheetId');
+    }
+  }
+
+  Logger.log(`[${FUNC_NAME}] No valid sheet found for ${userEmail}. Creating from template...`);
+  const templateId = TEMPLATE_SHEET_ID; // From Config.gs
+  if (!templateId || templateId.length < 20) {
+    return createJsonResponse({ status: 'error', message: 'Server configuration error: Master Template Sheet ID is invalid.' });
+  }
+
+  const templateFile = DriveApp.getFileById(templateId);
+  const newFileName = "CareerSuite.AI Data";
+  const newSheetFile = templateFile.makeCopy(newFileName);
+  const newSheetId = newSheetFile.getId();
+  
+  userProps.setProperty('userMjmSheetId', newSheetId);
+  Logger.log(`[${FUNC_NAME}] New sheet created for ${userEmail}. ID: ${newSheetId}`);
+
+  return createJsonResponse({
+    status: "success",
+    message: "Your new sheet was created! Finalizing setup now...",
+    sheetId: newSheetId,
+    sheetUrl: newSheetFile.getUrl()
+  });
 }
 
 /**
@@ -317,6 +295,57 @@ function doGet_WeeklyApplicationData(e) {
     return createJsonResponse({ 
         success: false, 
         error: `Error fetching weekly application data: ${error.toString()}`
+    });
+  }
+}
+
+function doPost(e) {
+  const FUNC_NAME = "WebApp_doPost";
+  try {
+    // --- User & Action Identification ---
+    const userEmail = Session.getEffectiveUser().getEmail();
+    Logger.log(`[${FUNC_NAME}] Received POST request from user: ${userEmail}.`);
+
+    const action = e && e.parameter ? e.parameter.action : null;
+
+    // === ACTION: setApiKey ===
+    if (action === 'setApiKey') {
+      Logger.log(`[${FUNC_NAME}] Routing to 'setApiKey' action.`);
+      
+      const postData = JSON.parse(e.postData.contents);
+      const apiKey = postData.apiKey;
+
+      if (!apiKey || typeof apiKey !== 'string' || apiKey.length < 35) {
+        Logger.log(`[${FUNC_NAME} ERROR] 'setApiKey' failed: Invalid API key provided.`);
+        return createJsonResponse({
+          status: 'error',
+          message: 'Invalid or missing API key provided in the request.'
+        });
+      }
+
+      // GEMINI_API_KEY_PROPERTY is the constant from Config.gs
+      PropertiesService.getUserProperties().setProperty(GEMINI_API_KEY_PROPERTY, apiKey);
+
+      Logger.log(`[${FUNC_NAME} SUCCESS] Saved Gemini API key to UserProperties for user ${userEmail}.`);
+      return createJsonResponse({
+        status: 'success',
+        message: 'API key was successfully saved to the backend.'
+      });
+    }
+
+    // Fallback for an unknown POST action.
+    Logger.log(`[${FUNC_NAME} WARN] An unknown POST action was requested: "${action}".`);
+    return createJsonResponse({
+      status: 'error',
+      message: 'Unknown or unsupported POST action requested.'
+    });
+
+  } catch (error) {
+    // Global Error Handling for any unexpected errors.
+    Logger.log(`[${FUNC_NAME} CRITICAL ERROR] Error in doPost: ${error.toString()}\nStack: ${error.stack}`);
+    return createJsonResponse({
+      status: 'error',
+      message: `Failed to complete POST action due to a server-side error: ${error.message}`
     });
   }
 }
