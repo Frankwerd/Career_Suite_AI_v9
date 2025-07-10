@@ -858,14 +858,13 @@ function userDrivenFullSetup() {
       Logger.log(`[userDrivenFullSetup WARN] Full project setup failed or had issues for sheet ID ${currentSheetId}. Result: ${JSON.stringify(setupResult)}. Cleared "${pendingSetupFlag}".`);
       ui.alert('Setup Issues Encountered', `The project setup for sheet "${activeSS.getName()}" had some issues.\n\nSummary:\n- ${setupResult.detailedMessages.join('\n- ')}\n\nPlease check the script logs (Extensions > Apps Script > Executions) for more details. You can try running "RUN FULL PROJECT SETUP" again from the menu.`, ui.ButtonSet.OK);
     }
-  } catch (e) {
+    } catch (e) {
     Logger.log(`[userDrivenFullSetup ERROR] Critical error during user-driven setup: ${e.toString()}\nStack: ${e.stack}`);
+    let alertMessage = `Critical Setup Error\n\nAn unexpected error occurred: ${e.message}. Please check the script logs for more details.`;
     if (activeSS) {
-      ui.alert('Critical Setup Error', `An unexpected error occurred during setup for sheet "${activeSS.getName()}": ${e.message}. Please check the script logs.`, ui.ButtonSet.OK);
-    } else {
-      ui.alert('Critical Setup Error', `An unexpected error occurred: ${e.message}. Please check the script logs.`, ui.ButtonSet.OK);
+      alertMessage = `Critical Setup Error\n\nAn unexpected error occurred during setup for sheet "${activeSS.getName()}": ${e.message}. Please check the script logs for more details.`;
     }
-    // Don't change flags on critical error, user might need to retry "Finalize" if it was there.
+    ui.alert(alertMessage); // This is now a single, valid parameter.
   }
 }
 
@@ -893,21 +892,16 @@ function handleCellEdit(e) {
   // Example: if (e && e.value === "TEST_EDIT") { e.range.getSheet().getRange("A1").setValue("Edit Detected!"); }
 }
 
-/**
- * Checks for and validates the Gemini API Key, then activates AI features.
- * Provides UI feedback to the user.
- * @return {boolean} True if AI features are now considered active, false otherwise.
- */
 function activateAiFeatures() {
   const FUNC_NAME = "activateAiFeatures";
   const ui = SpreadsheetApp.getUi();
-  const scriptProperties = PropertiesService.getScriptProperties(); // For aiFeaturesActive flag and storing the key locally
+  const scriptProperties = PropertiesService.getScriptProperties();
 
   try {
     Logger.log(`[${FUNC_NAME}] Attempting to fetch API key from master Web App.`);
     if (typeof MASTER_WEB_APP_URL === 'undefined' || MASTER_WEB_APP_URL === 'https://script.google.com/macros/s/YOUR_MASTER_DEPLOYMENT_ID/exec' || MASTER_WEB_APP_URL.trim() === '') {
       Logger.log(`[${FUNC_NAME} ERROR] MASTER_WEB_APP_URL is not configured in Config.js.`);
-      ui.alert('Configuration Error', 'The Master Web App URL is not configured. Please contact support or check script configuration if you are the administrator.', ui.ButtonSet.OK);
+      ui.alert('Configuration Error\n\nThe Master Web App URL is not configured. Please contact support or check script configuration if you are the administrator.');
       scriptProperties.setProperty('aiFeaturesActive', 'false');
       return false;
     }
@@ -918,7 +912,7 @@ function activateAiFeatures() {
         'Authorization': 'Bearer ' + ScriptApp.getOAuthToken()
       },
       muteHttpExceptions: true,
-      contentType: 'application/json' // Though for GET, body is not typical, contentType for response might be relevant.
+      contentType: 'application/json'
     };
 
     const response = UrlFetchApp.fetch(MASTER_WEB_APP_URL + '?action=getApiKeyForScript', options);
@@ -929,39 +923,38 @@ function activateAiFeatures() {
       const data = JSON.parse(responseBody);
       if (data.success && data.apiKey) {
         const fetchedApiKey = data.apiKey;
-        // Validate the fetched API key
         if (fetchedApiKey && fetchedApiKey.trim() !== "" && fetchedApiKey.startsWith("AIza") && fetchedApiKey.length > 30) {
-          scriptProperties.setProperty(GEMINI_API_KEY_PROPERTY, fetchedApiKey); // Store locally in copied script's properties
+          scriptProperties.setProperty(GEMINI_API_KEY_PROPERTY, fetchedApiKey);
           scriptProperties.setProperty('aiFeaturesActive', 'true');
           Logger.log(`[${FUNC_NAME}] API Key successfully fetched, validated, and stored in ScriptProperties. AI features activated.`);
-          ui.alert('AI Features Activated!', 'Your Gemini API Key has been successfully synced and validated. AI-powered features are now enabled.');
+          ui.alert('AI Features Activated!\n\nYour Gemini API Key has been successfully synced and validated. AI-powered features are now enabled.');
           return true;
         } else {
           Logger.log(`[${FUNC_NAME} WARN] Fetched API Key is invalid or malformed.`);
           scriptProperties.setProperty('aiFeaturesActive', 'false');
-          scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY); // Remove potentially invalid key
-          ui.alert('API Key Validation Failed', 'The API Key retrieved from your settings is invalid. Please update it in the CareerSuite.AI extension and try again.', ui.ButtonSet.OK);
+          scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY);
+          ui.alert('API Key Validation Failed\n\nThe API Key retrieved from your settings is invalid. Please update it in the CareerSuite.AI extension and try again.');
           return false;
         }
       } else {
         Logger.log(`[${FUNC_NAME} WARN] Web App call successful but API key not found or error in response: ${responseBody}`);
         scriptProperties.setProperty('aiFeaturesActive', 'false');
         scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY);
-        ui.alert('API Key Not Found', 'Could not retrieve your API Key. Please ensure it is saved correctly in the CareerSuite.AI extension settings, then try this menu option again.', ui.ButtonSet.OK);
+        ui.alert('API Key Not Found\n\nCould not retrieve your API Key. Please ensure it is saved correctly in the CareerSuite.AI extension settings, then try this menu option again.');
         return false;
       }
     } else {
       Logger.log(`[${FUNC_NAME} ERROR] Failed to fetch API Key from Web App. Response Code: ${responseCode}. Body: ${responseBody}`);
       scriptProperties.setProperty('aiFeaturesActive', 'false');
       scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY);
-      ui.alert('API Key Sync Failed', `Could not connect to the API Key service (Error: ${responseCode}). Please try again later or check extension settings.`, ui.ButtonSet.OK);
+      ui.alert(`API Key Sync Failed\n\nCould not connect to the API Key service (Error: ${responseCode}). Please try again later or check extension settings.`);
       return false;
     }
   } catch (error) {
     Logger.log(`[${FUNC_NAME} ERROR] Critical error during AI feature activation/API key sync: ${error.toString()}\nStack: ${error.stack}`);
     scriptProperties.setProperty('aiFeaturesActive', 'false');
     scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY);
-    ui.alert('Error Activating AI', `An unexpected error occurred: ${error.message}. Please check logs.`);
+    ui.alert(`Error Activating AI\n\nAn unexpected error occurred: ${error.message}. Please check logs.`);
     return false;
   }
 }
