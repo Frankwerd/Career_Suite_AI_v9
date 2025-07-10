@@ -23,6 +23,8 @@ function doGet(e) {
           return doGet_getOrCreateSheet(e);
         case 'getWeeklyApplicationData':
           return doGet_WeeklyApplicationData(e);
+        case 'getApiKeyForScript':
+          return doGet_getApiKeyForScript(e);
         default:
           return createJsonResponse({ success: false, error: `Unknown action: ${action}` });
       }
@@ -125,7 +127,7 @@ function doPost(e) {
       Logger.log(`[WebApp SUCCESS] New sheet created for ${userEmail}: "${newFileName}", ID=${newSpreadsheetId}. Ownership transferred.`);
 
       PropertiesService.getUserProperties().setProperty('userMjmSheetId', newSpreadsheetId);
-      runFullProjectInitialSetup(SpreadsheetApp.openById(newSpreadsheetId));
+      // runFullProjectInitialSetup(SpreadsheetApp.openById(newSpreadsheetId)); // DEFERRED TO ON_OPEN
       
       return ContentService.createTextOutput(JSON.stringify({
         status: 'success',
@@ -221,16 +223,16 @@ function doGet_getOrCreateSheet(e) {
   
   // 3. Run the full project setup on the newly created sheet.
   const newSheet = SpreadsheetApp.openById(newSheetId);
-  const setupResult = runFullProjectInitialSetup(newSheet); // From Main.gs
-  
-  if (!setupResult.success) {
-    Logger.log(`[${FUNC_NAME}] CRITICAL: Initial setup failed on new sheet ${newSheetId}.`);
-    // Consider deleting the failed sheet to avoid clutter: DriveApp.getFileById(newSheetId).setTrashed(true);
-    return createJsonResponse({
-      status: "error",
-      message: `Failed to initialize the new sheet. Please check script logs for details. Error: ${setupResult.message}`
-    });
-  }
+  // const setupResult = runFullProjectInitialSetup(newSheet); // From Main.gs // DEFERRED TO ON_OPEN
+
+  // if (!setupResult.success) { // DEFERRED TO ON_OPEN
+  //   Logger.log(`[${FUNC_NAME}] CRITICAL: Initial setup failed on new sheet ${newSheetId}.`);
+  //   // Consider deleting the failed sheet to avoid clutter: DriveApp.getFileById(newSheetId).setTrashed(true);
+  //   return createJsonResponse({
+  //     status: "error",
+  //     message: `Failed to initialize the new sheet. Please check script logs for details. Error: ${setupResult.message}`
+  //   });
+  // }
 
   // 4. Save the new, successfully initialized sheet ID to user properties.
   userProps.setProperty('userMjmSheetId', newSheetId);
@@ -316,5 +318,32 @@ function doGet_WeeklyApplicationData(e) {
         success: false, 
         error: `Error fetching weekly application data: ${error.toString()}`
     });
+  }
+}
+
+/**
+ * Handles GET requests to retrieve the stored Gemini API key for the authenticated user.
+ * @param {object} e The event parameter from the GET request.
+ * @return {GoogleAppsScript.Content.TextOutput} A JSON response containing the API key or an error.
+ */
+function doGet_getApiKeyForScript(e) {
+  const FUNC_NAME = "doGet_getApiKeyForScript";
+  try {
+    const userEmail = Session.getEffectiveUser().getEmail(); 
+    Logger.log(`[${FUNC_NAME}] Request from user: ${userEmail} to retrieve API key.`);
+    
+    // GEMINI_API_KEY_PROPERTY should be globally available if defined in Config.gs
+    const apiKey = PropertiesService.getUserProperties().getProperty(GEMINI_API_KEY_PROPERTY); 
+
+    if (apiKey) {
+      Logger.log(`[${FUNC_NAME}] API Key retrieved successfully for ${userEmail}.`);
+      return createJsonResponse({ success: true, apiKey: apiKey });
+    } else {
+      Logger.log(`[${FUNC_NAME}] API Key not found for ${userEmail}.`);
+      return createJsonResponse({ success: false, error: "API Key not found. Please ensure you have saved your API key in the extension settings." });
+    }
+  } catch (error) {
+    Logger.log(`[${FUNC_NAME} ERROR] Error retrieving API key: ${error.toString()}\nStack: ${error.stack}`);
+    return createJsonResponse({ success: false, error: `Server error while retrieving API key: ${error.message}` });
   }
 }
