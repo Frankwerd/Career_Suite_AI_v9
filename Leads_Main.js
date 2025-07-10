@@ -142,20 +142,20 @@ function processJobLeads() {
   Logger.log(`\n==== ${FUNC_NAME}: STARTING (${SCRIPT_START_TIME.toLocaleString()}) ====`);
 
   // --- 1. Configuration & Get Spreadsheet/Sheet ---
-  const userProperties = PropertiesService.getUserProperties();
-  const geminiApiKey = userProperties.getProperty(GEMINI_API_KEY_PROPERTY); // From Config.gs
+  const scriptProperties = PropertiesService.getScriptProperties(); // Changed from UserProperties
+  const geminiApiKey = scriptProperties.getProperty(GEMINI_API_KEY_PROPERTY); // From Config.gs
 
   if (geminiApiKey) {
-    Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Retrieved key for "${GEMINI_API_KEY_PROPERTY}" from UserProperties. Value (masked): ${geminiApiKey.substring(0,4)}...${geminiApiKey.substring(geminiApiKey.length-4)}`);
+    Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Retrieved key for "${GEMINI_API_KEY_PROPERTY}" from ScriptProperties. Value (masked): ${geminiApiKey.substring(0,4)}...${geminiApiKey.substring(geminiApiKey.length-4)}`);
     if (geminiApiKey.trim() !== "" && geminiApiKey.startsWith("AIza") && geminiApiKey.length > 30) {
-        Logger.log(`[${FUNC_NAME} INFO] Gemini API Key (UserProperties) is valid for Leads processing.`);
+        Logger.log(`[${FUNC_NAME} INFO] Gemini API Key (ScriptProperties) is valid for Leads processing.`);
     } else {
-        Logger.log(`[${FUNC_NAME} WARN] Gemini API Key (UserProperties) found but INvalid. callGemini_forJobLeads might use mock data or fail if this key is passed without its own internal placeholder check.`);
+        Logger.log(`[${FUNC_NAME} WARN] Gemini API Key (ScriptProperties) found but INvalid. callGemini_forJobLeads might use mock data or fail if this key is passed without its own internal placeholder check.`);
         Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Reason: Key failed validation. Length: ${geminiApiKey.length}, StartsWith AIza: ${geminiApiKey.startsWith("AIza")}`);
         // The callGemini_forJobLeads function has a mock fallback if API key is placeholder-like
     }
   } else {
-    Logger.log(`[${FUNC_NAME} WARN] Gemini API Key NOT FOUND in UserProperties for "${GEMINI_API_KEY_PROPERTY}". callGemini_forJobLeads will use mock/fail.`);
+    Logger.log(`[${FUNC_NAME} WARN] Gemini API Key NOT FOUND in ScriptProperties for "${GEMINI_API_KEY_PROPERTY}". callGemini_forJobLeads will use mock/fail.`);
   }
 
   const { spreadsheet: activeSS } = getOrCreateSpreadsheetAndSheet(); // From SheetUtils.gs
