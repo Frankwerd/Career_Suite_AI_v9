@@ -336,6 +336,18 @@ function initialSetup_LabelsAndSheet(activeSS) {
         else messages.push("Trigger 'processJobApplicationEmails': Exists/Verified.");
         if (createOrVerifyStaleRejectTrigger('markStaleApplicationsAsRejected', 2)) messages.push("Trigger 'markStaleApplicationsAsRejected': CREATED."); 
         else messages.push("Trigger 'markStaleApplicationsAsRejected': Exists/Verified.");
+        
+        // Add calls for new triggers
+        if (typeof createDailyReportTrigger === "function") {
+          if (createDailyReportTrigger()) messages.push("Trigger 'dailyReport': CREATED.");
+          else messages.push("Trigger 'dailyReport': Exists/Verified.");
+        } else { Logger.log(`[${FUNC_NAME} WARN] createDailyReportTrigger function not found.`); messages.push("Trigger 'dailyReport': SKIPPED (function missing).");}
+
+        if (typeof createOnEditTrigger === "function") {
+          if (createOnEditTrigger()) messages.push("Trigger 'handleCellEdit' (onEdit): CREATED.");
+          else messages.push("Trigger 'handleCellEdit' (onEdit): Exists/Verified.");
+        } else { Logger.log(`[${FUNC_NAME} WARN] createOnEditTrigger function not found.`); messages.push("Trigger 'handleCellEdit' (onEdit): SKIPPED (function missing).");}
+
     } catch(e) {
         Logger.log(`[${FUNC_NAME} ERROR] Trigger setup failed: ${e.toString()}`);
         messages.push(`Trigger setup FAILED: ${e.message}.`);
@@ -356,24 +368,24 @@ function processJobApplicationEmails() {
   Logger.log(`\n==== ${FUNC_NAME}: STARTING (${SCRIPT_START_TIME.toLocaleString()}) ====`);
 
   // --- 1. Configuration & Get Spreadsheet/Sheet ---
-  const userProperties = PropertiesService.getUserProperties(); // <<< CORRECTED
-  const geminiApiKey = userProperties.getProperty(GEMINI_API_KEY_PROPERTY); // GEMINI_API_KEY_PROPERTY from Config.gs
+  const scriptProperties = PropertiesService.getScriptProperties(); // Changed from UserProperties
+  const geminiApiKey = scriptProperties.getProperty(GEMINI_API_KEY_PROPERTY); // GEMINI_API_KEY_PROPERTY from Config.gs
   let useGemini = false;
 
   // Add detailed logging for the key retrieval
   if (geminiApiKey) {
-    Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Retrieved key for "${GEMINI_API_KEY_PROPERTY}" from UserProperties. Value (masked): ${geminiApiKey.substring(0,4)}...${geminiApiKey.substring(geminiApiKey.length-4)}`);
+    Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Retrieved key for "${GEMINI_API_KEY_PROPERTY}" from ScriptProperties. Value (masked): ${geminiApiKey.substring(0,4)}...${geminiApiKey.substring(geminiApiKey.length-4)}`);
   } else {
-    Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] NO key found for "${GEMINI_API_KEY_PROPERTY}" in UserProperties.`);
+    Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] NO key found for "${GEMINI_API_KEY_PROPERTY}" in ScriptProperties.`);
   }
 
   if (geminiApiKey && geminiApiKey.trim() !== "" && geminiApiKey.startsWith("AIza") && geminiApiKey.length > 30) {
     useGemini = true;
-    Logger.log(`[${FUNC_NAME} INFO] Gemini API Key found in UserProperties and appears valid. AI parsing enabled.`);
+    Logger.log(`[${FUNC_NAME} INFO] Gemini API Key found in ScriptProperties and appears valid. AI parsing enabled.`);
   } else {
-    Logger.log(`[${FUNC_NAME} WARN] Gemini API Key from UserProperties missing or invalid. Fallback to regex parsing.`);
+    Logger.log(`[${FUNC_NAME} WARN] Gemini API Key from ScriptProperties missing or invalid. Fallback to regex parsing.`);
     if (!geminiApiKey) {
-        Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Reason: geminiApiKey is null or undefined after fetching from UserProperties.`);
+        Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Reason: geminiApiKey is null or undefined after fetching from ScriptProperties.`);
     } else {
         Logger.log(`[${FUNC_NAME} DEBUG_API_KEY] Reason: Key found in UserProperties but failed validation. Length: ${geminiApiKey.length}, StartsWith AIza: ${geminiApiKey.startsWith("AIza")}`);
     }
@@ -705,75 +717,251 @@ function onOpen(e) {
   const ui = SpreadsheetApp.getUi();
   const menuName = CUSTOM_MENU_NAME || '⚙️ CareerSuite.AI Tools'; // CUSTOM_MENU_NAME from Config.gs
   const menu = ui.createMenu(menuName);
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const setupCompleteFlag = 'initialSetupDone_vCSAI_1';
+  const pendingSetupFlag = 'pendingUserInitiatedSetup_vCSAI_1';
 
-  menu.addItem('▶️ RUN FULL PROJECT SETUP', 'runFullProjectInitialSetup');
+  // IMPORTANT DEVELOPER NOTE:
+  // All script triggers are intended to be created programmatically by this script.
+  // Ensure that the `appsscript.json` manifest file for the MASTER TEMPLATE SCRIPT
+  // DOES NOT contain a "triggers" array.
+
+  const isSetupComplete = scriptProperties.getProperty(setupCompleteFlag) === 'true';
+  let needsUserInitiatedSetup = scriptProperties.getProperty(pendingSetupFlag) === 'true';
+
+  if (!isSetupComplete) {
+    const activeSS = SpreadsheetApp.getActiveSpreadsheet(); // Get activeSS once
+    const currentSheetId = activeSS.getId();
+    let isTemplateSheet = false;
+    if (typeof TEMPLATE_SHEET_ID !== 'undefined' && TEMPLATE_SHEET_ID && TEMPLATE_SHEET_ID !== "" && currentSheetId === TEMPLATE_SHEET_ID) {
+      isTemplateSheet = true;
+    }
+
+    if (!isTemplateSheet) {
+      // Not the template, and setup isn't complete.
+      // Mark for user-initiated setup if not already marked.
+      if (scriptProperties.getProperty(pendingSetupFlag) !== 'true') { // Check current value before setting
+        scriptProperties.setProperty(pendingSetupFlag, 'true');
+        needsUserInitiatedSetup = true; // Update local variable
+        Logger.log(`[onOpen INFO] New copy detected or setup pending (Sheet ID: ${currentSheetId}). Marked for user-initiated setup. Flag "${pendingSetupFlag}" set.`);
+      }
+      
+      // Always show alert if setup is pending for a non-template sheet
+      try {
+        SpreadsheetApp.getUi().alert(
+            'Additional Setup Required',
+            'Welcome to your new CareerSuite.AI sheet! To finalize setup (including enabling automated email processing and other features), please go to the "' + menuName + '" menu and select "🚀 Finalize Project Setup".',
+            SpreadsheetApp.getUi().ButtonSet.OK
+        );
+      } catch (uiError) {
+         Logger.log(`[onOpen WARN] Could not display setup alert: ${uiError.message}. This can happen in some non-interactive contexts.`);
+      }
+
+    } else {
+      Logger.log(`[onOpen INFO] Running on TEMPLATE sheet (ID: ${currentSheetId}). Automatic setup initiation skipped. Pending flag will not be set.`);
+      // Ensure pending flag is not set on template
+      if (scriptProperties.getProperty(pendingSetupFlag) === 'true'){
+        scriptProperties.deleteProperty(pendingSetupFlag);
+        needsUserInitiatedSetup = false;
+         Logger.log(`[onOpen INFO] Cleared "${pendingSetupFlag}" from template sheet.`);
+      }
+    }
+  } else {
+     Logger.log(`[onOpen INFO] Flag "${setupCompleteFlag}" is set. Setup previously completed.`);
+     // If setup is complete, ensure pending flag is cleared.
+     if (scriptProperties.getProperty(pendingSetupFlag) === 'true'){
+       scriptProperties.deleteProperty(pendingSetupFlag);
+       needsUserInitiatedSetup = false; // Update local var
+       Logger.log(`[onOpen INFO] Setup is complete. Cleared "${pendingSetupFlag}".`);
+     }
+  }
+
+  // Build the menu
+  if (needsUserInitiatedSetup && !isSetupComplete) { // Show only if pending and not complete
+    menu.addItem('🚀 Finalize Project Setup', 'userDrivenFullSetup');
+    menu.addSeparator();
+    // Also add the re-run option, but make it clear it's for re-running
+    menu.addItem('▶️ Re-run Full Project Setup (if needed)', 'userDrivenFullSetup');
+  } else {
+    // If setup is complete, or not pending (e.g. on template), show the standard re-run option
+    menu.addItem('▶️ RUN FULL PROJECT SETUP', 'userDrivenFullSetup');
+  }
+  
   menu.addSeparator();
   menu.addSubMenu(ui.createMenu('Module Setups')
-      .addItem('Setup: Job Application Tracker', 'initialSetup_LabelsAndSheet')
-      .addItem('Setup: Job Leads Tracker', 'runInitialSetup_JobLeadsModule')); // Assumed in Leads_Main.gs
+      .addItem('Setup: Job Application Tracker', 'initialSetup_LabelsAndSheet') 
+      .addItem('Setup: Job Leads Tracker', 'runInitialSetup_JobLeadsModule'));
   menu.addSeparator();
   menu.addSubMenu(ui.createMenu('Manual Processing')
       .addItem('📧 Process Application Emails', 'processJobApplicationEmails')
-      .addItem('📬 Process Job Leads', 'processJobLeads') // Assumed in Leads_Main.gs
+      .addItem('📬 Process Job Leads', 'processJobLeads')
       .addItem('🗑️ Mark Stale Applications', 'markStaleApplicationsAsRejected'));
   menu.addSeparator();
   menu.addSubMenu(ui.createMenu('Admin & Config')
-      .addItem('🔑 Set Gemini API Key', 'setSharedGeminiApiKey_UI') // Assumed in AdminUtils.gs
-      .addItem('🔍 Show All User Properties', 'showAllUserProperties') // Assumed in AdminUtils.gs
-      .addItem('🔩 TEMPORARY: Set Hardcoded API Key', 'TEMPORARY_manualSetSharedGeminiApiKey')); // Assumed in AdminUtils.gs
+      .addItem('🔑 Set Gemini API Key', 'setSharedGeminiApiKey_UI')
+      .addItem('🔄 Activate AI Features & Sync Key', 'activateAiFeatures') // New menu item
+      .addItem('🔍 Show All User Properties', 'showAllUserProperties')
+      .addItem('🔩 TEMPORARY: Set Hardcoded API Key', 'TEMPORARY_manualSetSharedGeminiApiKey'));
   menu.addToUi();
+}
 
-  // --- Automatic Initial Setup for New Copies ---
-  // This section attempts to run the initial setup automatically when a user opens
-  // their unique copy of the sheet (with its own copied script project) for the first time.
+/**
+ * Wrapper function to be called by the user from the menu to run the full initial setup.
+ * Provides UI feedback and manages setup flags.
+ */
+function userDrivenFullSetup() {
+  const ui = SpreadsheetApp.getUi();
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const setupCompleteFlag = 'initialSetupDone_vCSAI_1';
+  const pendingSetupFlag = 'pendingUserInitiatedSetup_vCSAI_1';
+  let activeSS;
+
   try {
-    const scriptProperties = PropertiesService.getScriptProperties();
-    const setupCompleteFlag = 'initialSetupDone_vCSAI_1'; // Use a unique, versioned flag
+    activeSS = SpreadsheetApp.getActiveSpreadsheet(); // Get current spreadsheet
+    const currentSheetId = activeSS.getId();
 
-    if (!scriptProperties.getProperty(setupCompleteFlag)) {
-      Logger.log(`[onOpen INFO] Flag "${setupCompleteFlag}" not found. Checking conditions for initial setup.`);
+    // Final template check before running destructive/additive setup
+    if (typeof TEMPLATE_SHEET_ID !== 'undefined' && TEMPLATE_SHEET_ID && TEMPLATE_SHEET_ID !== "" && currentSheetId === TEMPLATE_SHEET_ID) {
+        Logger.log(`[userDrivenFullSetup WARN] Attempted to run full setup on TEMPLATE sheet (ID: ${currentSheetId}). Aborting.`);
+        ui.alert('Action Not Allowed on Template', 'This setup function cannot be run on the master template sheet. Please make a copy first, then run the setup from the copy.', ui.ButtonSet.OK);
+        return;
+    }
 
-      // Ensure this isn't running in a limited authorization mode (e.g., when a trigger fires headless)
-      // For onOpen, e.authMode is usually FULL or LIMITED for the user opening it. NONE is rare for onOpen.
-      if (e && e.authMode && e.authMode !== ScriptApp.AuthMode.NONE) {
-        const activeSS = SpreadsheetApp.getActiveSpreadsheet();
-        const currentSheetId = activeSS.getId();
+    ui.alert('Starting Setup', 'The full project setup will now begin. This may take a minute or two. You will be notified upon completion.', ui.ButtonSet.OK);
+    
+    const setupResult = runFullProjectInitialSetup(activeSS); // Existing comprehensive setup function
+    
+    if (setupResult && setupResult.success) {
+      scriptProperties.setProperty(setupCompleteFlag, 'true');
+      scriptProperties.deleteProperty(pendingSetupFlag); // Clean up pending flag
+      Logger.log(`[userDrivenFullSetup INFO] Full project setup successful for sheet ID ${currentSheetId}. Flag "${setupCompleteFlag}" set. Cleared "${pendingSetupFlag}".`);
+      
+      let finalMessage = `The CareerSuite.AI project basic setup is complete for sheet "${activeSS.getName()}".\n\nSummary:\n- ${setupResult.detailedMessages.join('\n- ')}`;
+      const aiFeaturesAreActive = activateAiFeatures(); // Call and check AI features
 
-        // Safety check: Ensure this isn't the original template sheet.
-        // This is a secondary check; the primary scenario is this code runs in a *copied* script project
-        // where TEMPLATE_SHEET_ID might not even be relevant if Config.js isn't perfectly copied or is altered.
-        // However, if TEMPLATE_SHEET_ID *is* defined (e.g. from Config.js) and matches, skip.
-        let isTemplate = false;
-        if (typeof TEMPLATE_SHEET_ID !== 'undefined' && TEMPLATE_SHEET_ID && TEMPLATE_SHEET_ID !== "" && currentSheetId === TEMPLATE_SHEET_ID) {
-          isTemplate = true;
-          Logger.log(`[onOpen INFO] Current sheet (ID: ${currentSheetId}) is the template. Automatic setup skipped.`);
-        }
+      if (aiFeaturesAreActive) {
+        finalMessage += "\n\nAI features are now active.";
+        ui.alert('Setup Complete & AI Active!', finalMessage.substring(0,1300), ui.ButtonSet.OK);
+      } else {
+        finalMessage += "\n\nTo enable AI features, please add your API Key in the extension settings, then return here and select '⚙️ CareerSuite.AI Tools' -> '🔄 Activate AI Features & Sync Key'.";
+        ui.alert('Basic Setup Complete - AI Features Pending', finalMessage.substring(0,1400), ui.ButtonSet.OK);
+      }
+      
+      // New prompt to guide user back to tutorial (shown regardless of AI status, as basic setup is done)
+      ui.alert('Next Steps', 'You can return to the tutorial page for guidance on using your new CareerSuite.AI sheet, or start exploring it right away.', ui.ButtonSet.OK);
 
-        if (!isTemplate) {
-          Logger.log(`[onOpen INFO] New copy (Sheet ID: ${currentSheetId}). Attempting automatic initial setup.`);
-          // Call the main setup function, passing the active spreadsheet.
-          const setupResult = runFullProjectInitialSetup(activeSS);
+    } else {
+      // Even if setup had issues, if it was attempted, we might not want to keep "pendingSetupFlag"
+      // But if it failed critically, user might need to retry. Let's leave pending flag for now if failed.
+      // Or, better, clear it and let them re-run "RUN FULL PROJECT SETUP"
+      scriptProperties.deleteProperty(pendingSetupFlag); // Clear pending flag even on failure to allow re-run via main menu.
+      Logger.log(`[userDrivenFullSetup WARN] Full project setup failed or had issues for sheet ID ${currentSheetId}. Result: ${JSON.stringify(setupResult)}. Cleared "${pendingSetupFlag}".`);
+      ui.alert('Setup Issues Encountered', `The project setup for sheet "${activeSS.getName()}" had some issues.\n\nSummary:\n- ${setupResult.detailedMessages.join('\n- ')}\n\nPlease check the script logs (Extensions > Apps Script > Executions) for more details. You can try running "RUN FULL PROJECT SETUP" again from the menu.`, ui.ButtonSet.OK);
+    }
+  } catch (e) {
+    Logger.log(`[userDrivenFullSetup ERROR] Critical error during user-driven setup: ${e.toString()}\nStack: ${e.stack}`);
+    if (activeSS) {
+      ui.alert('Critical Setup Error', `An unexpected error occurred during setup for sheet "${activeSS.getName()}": ${e.message}. Please check the script logs.`, ui.ButtonSet.OK);
+    } else {
+      ui.alert('Critical Setup Error', `An unexpected error occurred: ${e.message}. Please check the script logs.`, ui.ButtonSet.OK);
+    }
+    // Don't change flags on critical error, user might need to retry "Finalize" if it was there.
+  }
+}
 
-          if (setupResult && setupResult.success) {
-            scriptProperties.setProperty(setupCompleteFlag, 'true');
-            Logger.log(`[onOpen INFO] Automatic initial setup successful. Flag "${setupCompleteFlag}" set.`);
-            // Optionally, notify the user of success if appropriate (though setup might have its own alerts)
-            // ui.alert('Setup Complete', 'The initial setup for your sheet has completed successfully!', ui.ButtonSet.OK);
-          } else {
-            Logger.log(`[onOpen WARN] Automatic initial setup may have failed or was skipped. Result: ${JSON.stringify(setupResult)}`);
-            // Optionally, alert the user that setup needs to be run manually
-            // ui.alert('Setup Incomplete', 'The automatic initial setup did not complete as expected. Please try running "RUN FULL PROJECT SETUP" from the "${menuName}" menu.', ui.ButtonSet.OK);
-          }
+// --- Placeholder functions for new triggers ---
+/**
+ * Placeholder for daily report functionality.
+ * Triggered by a time-based trigger created programmatically.
+ */
+function dailyReport() {
+  // This function will be triggered daily in the user's account
+  Logger.log('Executing dailyReport in user account: ' + new Date());
+  // ... logic for daily report ...
+  // Example: SpreadsheetApp.getUi().alert('Daily Report', 'Daily report executed!', SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+/**
+ * Placeholder for handling cell edits.
+ * Triggered by an installable onEdit trigger created programmatically.
+ * @param {Object} e The event object.
+ */
+function handleCellEdit(e) {
+  // This function will be triggered on edits in the user's sheet
+  Logger.log('Cell edited in user account: ' + (e && e.range ? e.range.getA1Notation() : 'N/A'));
+  // ... logic for handling edits ...
+  // Example: if (e && e.value === "TEST_EDIT") { e.range.getSheet().getRange("A1").setValue("Edit Detected!"); }
+}
+
+/**
+ * Checks for and validates the Gemini API Key, then activates AI features.
+ * Provides UI feedback to the user.
+ * @return {boolean} True if AI features are now considered active, false otherwise.
+ */
+function activateAiFeatures() {
+  const FUNC_NAME = "activateAiFeatures";
+  const ui = SpreadsheetApp.getUi();
+  const scriptProperties = PropertiesService.getScriptProperties(); // For aiFeaturesActive flag and storing the key locally
+
+  try {
+    Logger.log(`[${FUNC_NAME}] Attempting to fetch API key from master Web App.`);
+    if (typeof MASTER_WEB_APP_URL === 'undefined' || MASTER_WEB_APP_URL === 'https://script.google.com/macros/s/YOUR_MASTER_DEPLOYMENT_ID/exec' || MASTER_WEB_APP_URL.trim() === '') {
+      Logger.log(`[${FUNC_NAME} ERROR] MASTER_WEB_APP_URL is not configured in Config.js.`);
+      ui.alert('Configuration Error', 'The Master Web App URL is not configured. Please contact support or check script configuration if you are the administrator.', ui.ButtonSet.OK);
+      scriptProperties.setProperty('aiFeaturesActive', 'false');
+      return false;
+    }
+
+    const options = {
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + ScriptApp.getOAuthToken()
+      },
+      muteHttpExceptions: true,
+      contentType: 'application/json' // Though for GET, body is not typical, contentType for response might be relevant.
+    };
+
+    const response = UrlFetchApp.fetch(MASTER_WEB_APP_URL + '?action=getApiKeyForScript', options);
+    const responseCode = response.getResponseCode();
+    const responseBody = response.getContentText();
+
+    if (responseCode === 200) {
+      const data = JSON.parse(responseBody);
+      if (data.success && data.apiKey) {
+        const fetchedApiKey = data.apiKey;
+        // Validate the fetched API key
+        if (fetchedApiKey && fetchedApiKey.trim() !== "" && fetchedApiKey.startsWith("AIza") && fetchedApiKey.length > 30) {
+          scriptProperties.setProperty(GEMINI_API_KEY_PROPERTY, fetchedApiKey); // Store locally in copied script's properties
+          scriptProperties.setProperty('aiFeaturesActive', 'true');
+          Logger.log(`[${FUNC_NAME}] API Key successfully fetched, validated, and stored in ScriptProperties. AI features activated.`);
+          ui.alert('AI Features Activated!', 'Your Gemini API Key has been successfully synced and validated. AI-powered features are now enabled.');
+          return true;
+        } else {
+          Logger.log(`[${FUNC_NAME} WARN] Fetched API Key is invalid or malformed.`);
+          scriptProperties.setProperty('aiFeaturesActive', 'false');
+          scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY); // Remove potentially invalid key
+          ui.alert('API Key Validation Failed', 'The API Key retrieved from your settings is invalid. Please update it in the CareerSuite.AI extension and try again.', ui.ButtonSet.OK);
+          return false;
         }
       } else {
-        Logger.log(`[onOpen INFO] Setup skipped due to AuthMode: ${e ? e.authMode : 'N/A (no event object)'}. This is normal if opened in a restricted context.`);
+        Logger.log(`[${FUNC_NAME} WARN] Web App call successful but API key not found or error in response: ${responseBody}`);
+        scriptProperties.setProperty('aiFeaturesActive', 'false');
+        scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY);
+        ui.alert('API Key Not Found', 'Could not retrieve your API Key. Please ensure it is saved correctly in the CareerSuite.AI extension settings, then try this menu option again.', ui.ButtonSet.OK);
+        return false;
       }
     } else {
-      Logger.log(`[onOpen INFO] Flag "${setupCompleteFlag}" is set. Automatic initial setup already performed or skipped previously.`);
+      Logger.log(`[${FUNC_NAME} ERROR] Failed to fetch API Key from Web App. Response Code: ${responseCode}. Body: ${responseBody}`);
+      scriptProperties.setProperty('aiFeaturesActive', 'false');
+      scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY);
+      ui.alert('API Key Sync Failed', `Could not connect to the API Key service (Error: ${responseCode}). Please try again later or check extension settings.`, ui.ButtonSet.OK);
+      return false;
     }
-  } catch (err) {
-    Logger.log(`[onOpen ERROR] Error during automatic initial setup attempt: ${err.toString()}\nStack: ${err.stack}`);
-    // Avoid breaking the onOpen for menu creation if auto-setup fails.
-    // ui.alert('Error', 'An error occurred during the onOpen process. Some automated setup steps may not have run. Please check logs or try manual setup.', ui.ButtonSet.OK);
+  } catch (error) {
+    Logger.log(`[${FUNC_NAME} ERROR] Critical error during AI feature activation/API key sync: ${error.toString()}\nStack: ${error.stack}`);
+    scriptProperties.setProperty('aiFeaturesActive', 'false');
+    scriptProperties.deleteProperty(GEMINI_API_KEY_PROPERTY);
+    ui.alert('Error Activating AI', `An unexpected error occurred: ${error.message}. Please check logs.`);
+    return false;
   }
 }
