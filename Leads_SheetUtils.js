@@ -1,4 +1,4 @@
-// File: Leads_SheetUtils.gs
+// File: WebApp_Endpoints.gs
 // Handles GET and POST requests for the CareerSuite.AI Web App.
 
 // NOTE: The hardcoded template ID has been removed from this file.
